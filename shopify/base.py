@@ -1,3 +1,5 @@
+import time
+
 import pyactiveresource.connection
 from pyactiveresource.activeresource import ActiveResource, ResourceMeta, formats
 import shopify.yamlobjects
@@ -11,8 +13,12 @@ import six
 from shopify.collection import PaginatedCollection
 from pyactiveresource.collection import Collection
 
+import logging
+
 # Store the response from the last request in the connection object
 
+# The number of times a rate limited request will be retried.
+MAX_RETRIES = 3
 
 class ShopifyConnection(pyactiveresource.connection.Connection):
     response = None
@@ -22,12 +28,32 @@ class ShopifyConnection(pyactiveresource.connection.Connection):
 
     def _open(self, *args, **kwargs):
         self.response = None
-        try:
-            self.response = super(ShopifyConnection, self)._open(*args, **kwargs)
-        except pyactiveresource.connection.ConnectionError as err:
-            self.response = err.response
-            raise
-        return self.response
+
+        # A lazy implementation of Shopify rate limiting retry mechanism. Instead of following leaky bucket,
+        # it just makes the expected-to-fail request and then uses the response headers `Retry-After` attribute
+        # to retry after a specific amount of time.
+        retries = 0
+        while True:
+            try:
+                self.response = super(ShopifyConnection, self)._open(*args, **kwargs)
+                return self.response
+            # Catch 429s and retry
+            except pyactiveresource.connection.ConnectionError as err:
+                retries += 1
+                if err.response.code == 429 and retries <= MAX_RETRIES:
+                    retry_after = float(err.response.headers.get('Retry-After', 2))
+                    logging.info(f'Service exceeds Shopify API call limit for shop {self.site}, will retry request in '
+                                 f'{retry_after} seconds')
+                    time.sleep(retry_after)
+                else:
+                    self.response = err.response
+                    raise
+            # Raise any other exceptions as-is
+            except Exception as err:
+                self.response = err.response
+                raise
+
+
 
 
 # Inherit from pyactiveresource's metaclass in order to use ShopifyConnection

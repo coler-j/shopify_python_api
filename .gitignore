@@ -12,3 +12,4 @@ tags
 .python-version
 .cache
 .tox/
+venv
